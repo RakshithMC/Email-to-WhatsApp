@@ -1,4 +1,4 @@
-$root = "C:\Users\Rakshith M.C\OneDrive\Documents\New project"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pidFile = Join-Path $root "worker.pid"
 
 if (-not (Test-Path $pidFile)) {
