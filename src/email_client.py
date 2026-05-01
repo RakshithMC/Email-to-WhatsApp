@@ -10,7 +10,6 @@ from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 from html import unescape
-from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
@@ -37,32 +36,55 @@ class ImapInboxClient:
     def __init__(self, config: EmailConfig, timezone_name: str) -> None:
         self.config = config
         self.timezone = ZoneInfo(timezone_name)
+        self._client: imaplib.IMAP4_SSL | imaplib.IMAP4 | None = None
+        self._mailbox_selected = False
 
     def fetch_new_messages(self) -> list[EmailItem]:
-        client = self._connect()
+        client = self._ensure_selected_client()
+        search_query = "UNSEEN" if self.config.only_unread else "ALL"
+        status, data = client.uid("SEARCH", None, search_query)
+        if status != "OK":
+            self._reset_connection()
+            raise RuntimeError("Failed to search mailbox")
+
+        uids = [uid.decode("utf-8") for uid in data[0].split() if uid]
+        items: list[EmailItem] = []
+        for uid in uids:
+            item = self._fetch_message(client, uid)
+            if item and self._passes_filters(item):
+                items.append(item)
+        return items
+
+    def wait_for_mailbox_update(self, timeout_seconds: int) -> bool:
+        client = self._ensure_selected_client()
+        idle_timeout = min(timeout_seconds, 29 * 60)
+
         try:
-            status, _ = client.select(self.config.mailbox, readonly=True)
-            if status != "OK":
-                raise RuntimeError(f"Failed to select mailbox {self.config.mailbox}")
+            with client.idle(duration=idle_timeout) as idler:
+                for response_type, response_data in idler:
+                    if self._response_indicates_mailbox_change(
+                        response_type=response_type,
+                        response_data=response_data,
+                    ):
+                        return True
+        except (imaplib.IMAP4.abort, imaplib.IMAP4.error):
+            self._reset_connection()
+            raise
 
-            search_query = "UNSEEN" if self.config.only_unread else "ALL"
-            status, data = client.uid("SEARCH", None, search_query)
-            if status != "OK":
-                raise RuntimeError("Failed to search mailbox")
+        return False
 
-            uids = [uid.decode("utf-8") for uid in data[0].split() if uid]
-            items: list[EmailItem] = []
-            for uid in uids:
-                item = self._fetch_message(client, uid)
-                if item and self._passes_filters(item):
-                    items.append(item)
-            return items
-        finally:
+    def close(self) -> None:
+        if self._client is None:
+            return
+        try:
             try:
-                client.close()
+                self._client.close()
             except Exception:
                 pass
-            client.logout()
+            self._client.logout()
+        finally:
+            self._client = None
+            self._mailbox_selected = False
 
     def _connect(self) -> imaplib.IMAP4_SSL | imaplib.IMAP4:
         if self.config.use_ssl:
@@ -71,6 +93,26 @@ class ImapInboxClient:
             client = imaplib.IMAP4(self.config.host, self.config.port)
         client.login(self.config.username, self.config.password)
         return client
+
+    def _ensure_selected_client(self) -> imaplib.IMAP4_SSL | imaplib.IMAP4:
+        if self._client is None:
+            self._client = self._connect()
+            self._mailbox_selected = False
+
+        if not self._mailbox_selected:
+            status, _ = self._client.select(self.config.mailbox, readonly=True)
+            if status != "OK":
+                self._reset_connection()
+                raise RuntimeError(f"Failed to select mailbox {self.config.mailbox}")
+            self._mailbox_selected = True
+
+        return self._client
+
+    def _reset_connection(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            logger.debug("Ignoring IMAP connection cleanup failure", exc_info=True)
 
     def _fetch_message(
         self, client: imaplib.IMAP4_SSL | imaplib.IMAP4, uid: str
@@ -190,3 +232,22 @@ class ImapInboxClient:
             return str(make_header(decode_header(value))).strip()
         except Exception:
             return value.strip()
+
+    @staticmethod
+    def _response_indicates_mailbox_change(
+        response_type: bytes | str,
+        response_data: list[bytes] | tuple[bytes, ...] | bytes | None,
+    ) -> bool:
+        if isinstance(response_type, bytes):
+            response_name = response_type.decode("utf-8", errors="ignore").upper()
+        else:
+            response_name = str(response_type).upper()
+
+        if response_name in {"EXISTS", "RECENT"}:
+            return True
+
+        if response_name == "FETCH" and response_data:
+            payload = b" ".join(response_data) if isinstance(response_data, (list, tuple)) else response_data
+            return b"FLAGS" in payload.upper()
+
+        return False

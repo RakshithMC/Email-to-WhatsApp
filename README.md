@@ -1,23 +1,25 @@
 # Emails to WhatsApp Automation
 
-This service polls your inbox every minute over IMAP and forwards each new email to WhatsApp through either the Twilio WhatsApp API or the Meta WhatsApp Cloud API.
+This service keeps a live IMAP IDLE connection to your inbox and forwards each new email to WhatsApp through either the Twilio WhatsApp API or the Meta WhatsApp Cloud API.
 
 It is designed for Gmail, Outlook, Yahoo, and custom IMAP inboxes without storing mailbox passwords in code. Credentials are loaded from environment variables, and Gmail/Yahoo should use app passwords.
 
 ## Features
 
 - Supports Gmail, Outlook, Yahoo, and custom IMAP accounts
-- Polls `INBOX` every 60 seconds
+- Watches `INBOX` in near real time with IMAP IDLE
+- Seeds the first run safely so existing unread mail does not flood WhatsApp
 - Extracts sender name, sender email, subject, received time, and the first 300 characters
 - Avoids duplicate alerts with SQLite-backed dedupe keys
 - Retries failed WhatsApp sends automatically
+- Persists failed notifications for later retry even across worker restarts
 - Keeps delivery logs in SQLite
 - Supports optional VIP sender filtering, important-only filtering, and attachment alerts
 - Supports `WHATSAPP_PROVIDER=twilio` or `WHATSAPP_PROVIDER=meta`
 
 ## Architecture
 
-1. `src/main.py` runs an always-on worker loop.
+1. `src/main.py` runs an always-on real-time worker loop.
 2. `src/email_client.py` connects to IMAP, reads unread inbox emails, and builds message previews.
 3. `src/notifier.py` sends formatted WhatsApp notifications through Twilio or Meta.
 4. `src/store.py` stores processed messages and delivery logs in `data/automation.db`.
@@ -140,7 +142,11 @@ Optional:
 - `EMAIL_USE_SSL`
 - `EMAIL_MAILBOX`
 - `POLL_INTERVAL_SECONDS`
+- `IDLE_TIMEOUT_SECONDS`
 - `BODY_PREVIEW_LENGTH`
+- `SKIP_EXISTING_ON_STARTUP`
+- `FAILED_RETRY_DELAY_SECONDS`
+- `FAILED_RETRY_MAX_ATTEMPTS`
 - `ONLY_UNREAD`
 - `IMPORTANT_ONLY`
 - `VIP_SENDERS`
@@ -153,9 +159,11 @@ Optional:
 
 ## Filters and Rules
 
-- Spam and Promotions are skipped by polling only the `INBOX` mailbox.
+- Spam and Promotions are skipped by watching only the `INBOX` mailbox.
+- On a fresh database, the worker marks the current unread inbox state as processed before entering the steady-state loop. This prevents a first-run blast of old unread mail while still forwarding newly arriving messages immediately afterward.
 - Duplicate alerts are prevented using a dedupe key based on provider, mailbox, and `Message-ID` or IMAP UID.
-- Failed WhatsApp deliveries retry up to 3 times with exponential backoff.
+- Each WhatsApp API request retries up to 3 times with exponential backoff.
+- If all immediate retries fail, the notification is persisted in SQLite and retried in later loop cycles until `FAILED_RETRY_MAX_ATTEMPTS` is reached.
 - Delivery attempts are stored in the `delivery_logs` table.
 - Startup validation fails fast if required provider credentials are missing or invalid.
 

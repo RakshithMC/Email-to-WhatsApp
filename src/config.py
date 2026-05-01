@@ -73,6 +73,10 @@ class AppConfig:
     email: EmailConfig
     whatsapp: WhatsAppConfig
     poll_interval_seconds: int
+    idle_timeout_seconds: int
+    skip_existing_on_startup: bool
+    failed_retry_delay_seconds: int
+    failed_retry_max_attempts: int
     log_level: str
     db_path: str
     timezone_name: str
@@ -131,6 +135,10 @@ def load_config() -> AppConfig:
             meta_phone_number_id=os.getenv("META_WHATSAPP_PHONE_NUMBER_ID", "").strip(),
         ),
         poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 60),
+        idle_timeout_seconds=_get_int("IDLE_TIMEOUT_SECONDS", 1740),
+        skip_existing_on_startup=_get_bool("SKIP_EXISTING_ON_STARTUP", True),
+        failed_retry_delay_seconds=_get_int("FAILED_RETRY_DELAY_SECONDS", 300),
+        failed_retry_max_attempts=_get_int("FAILED_RETRY_MAX_ATTEMPTS", 20),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         db_path=os.getenv("DB_PATH", "data/automation.db").strip(),
         timezone_name=timezone_name,
@@ -144,6 +152,12 @@ def _validate_config(config: AppConfig) -> None:
         raise ValueError("EMAIL_PORT must be a positive integer")
     if config.poll_interval_seconds <= 0:
         raise ValueError("POLL_INTERVAL_SECONDS must be a positive integer")
+    if config.idle_timeout_seconds <= 0:
+        raise ValueError("IDLE_TIMEOUT_SECONDS must be a positive integer")
+    if config.failed_retry_delay_seconds <= 0:
+        raise ValueError("FAILED_RETRY_DELAY_SECONDS must be a positive integer")
+    if config.failed_retry_max_attempts <= 0:
+        raise ValueError("FAILED_RETRY_MAX_ATTEMPTS must be a positive integer")
     if config.email.body_preview_length <= 0:
         raise ValueError("BODY_PREVIEW_LENGTH must be a positive integer")
     if not config.db_path:

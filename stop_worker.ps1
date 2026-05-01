@@ -6,10 +6,10 @@ if (-not (Test-Path $pidFile)) {
     exit 0
 }
 
-$pid = Get-Content $pidFile | Select-Object -First 1
-if ($pid) {
-    Stop-Process -Id $pid -ErrorAction SilentlyContinue
+$workerPid = Get-Content $pidFile | Select-Object -First 1
+if ($workerPid) {
+    Stop-Process -Id $workerPid -ErrorAction SilentlyContinue
 }
 
 Remove-Item $pidFile -ErrorAction SilentlyContinue
-Write-Output "Stopped worker PID $pid"
+Write-Output "Stopped worker PID $workerPid"
